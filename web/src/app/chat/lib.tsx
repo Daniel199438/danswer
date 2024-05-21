@@ -10,13 +10,20 @@ import {
   BackendMessage,
   ChatSession,
   DocumentsResponse,
+  ImageGenerationDisplay,
   Message,
   RetrievalType,
   StreamingError,
+  ToolRunKickoff,
 } from "./interfaces";
-import { Persona } from "../admin/personas/interfaces";
+import { Persona } from "../admin/assistants/interfaces";
+import { ReadonlyURLSearchParams } from "next/navigation";
+import { SEARCH_PARAM_NAMES } from "./searchParams";
 
-export async function createChatSession(personaId: number): Promise<number> {
+export async function createChatSession(
+  personaId: number,
+  description: string | null
+): Promise<number> {
   const createChatSessionResponse = await fetch(
     "/api/chat/create-chat-session",
     {
@@ -26,6 +33,7 @@ export async function createChatSession(personaId: number): Promise<number> {
       },
       body: JSON.stringify({
         persona_id: personaId,
+        description,
       }),
     }
   );
@@ -39,19 +47,9 @@ export async function createChatSession(personaId: number): Promise<number> {
   return chatSessionResponseJson.chat_session_id;
 }
 
-export interface SendMessageRequest {
-  message: string;
-  parentMessageId: number | null;
-  chatSessionId: number;
-  promptId: number | null | undefined;
-  filters: Filters | null;
-  selectedDocumentIds: number[] | null;
-  queryOverride?: string;
-  forceSearch?: boolean;
-}
-
 export async function* sendMessage({
   message,
+  fileIds,
   parentMessageId,
   chatSessionId,
   promptId,
@@ -59,7 +57,29 @@ export async function* sendMessage({
   selectedDocumentIds,
   queryOverride,
   forceSearch,
-}: SendMessageRequest) {
+  modelVersion,
+  temperature,
+  systemPromptOverride,
+  useExistingUserMessage,
+}: {
+  message: string;
+  fileIds: string[];
+  parentMessageId: number | null;
+  chatSessionId: number;
+  promptId: number | null | undefined;
+  filters: Filters | null;
+  selectedDocumentIds: number[] | null;
+  queryOverride?: string;
+  forceSearch?: boolean;
+  // LLM overrides
+  modelVersion?: string;
+  temperature?: number;
+  // prompt overrides
+  systemPromptOverride?: string;
+  // if specified, will use the existing latest user message
+  // and will ignore the specified `message`
+  useExistingUserMessage?: boolean;
+}) {
   const documentsAreSelected =
     selectedDocumentIds && selectedDocumentIds.length > 0;
   const sendMessageResponse = await fetch("/api/chat/send-message", {
@@ -73,6 +93,7 @@ export async function* sendMessage({
       message: message,
       prompt_id: promptId,
       search_doc_ids: documentsAreSelected ? selectedDocumentIds : null,
+      file_ids: fileIds,
       retrieval_options: !documentsAreSelected
         ? {
             run_search:
@@ -87,6 +108,19 @@ export async function* sendMessage({
           }
         : null,
       query_override: queryOverride,
+      prompt_override: systemPromptOverride
+        ? {
+            system_prompt: systemPromptOverride,
+          }
+        : null,
+      llm_override:
+        temperature || modelVersion
+          ? {
+              temperature,
+              model_version: modelVersion,
+            }
+          : null,
+      use_existing_user_message: useExistingUserMessage,
     }),
   });
   if (!sendMessageResponse.ok) {
@@ -96,7 +130,12 @@ export async function* sendMessage({
   }
 
   yield* handleStream<
-    AnswerPiecePacket | DocumentsResponse | BackendMessage | StreamingError
+    | AnswerPiecePacket
+    | DocumentsResponse
+    | BackendMessage
+    | ImageGenerationDisplay
+    | ToolRunKickoff
+    | StreamingError
   >(sendMessageResponse);
 }
 
@@ -115,10 +154,24 @@ export async function nameChatSession(chatSessionId: number, message: string) {
   return response;
 }
 
+export async function setMessageAsLatest(messageId: number) {
+  const response = await fetch("/api/chat/set-message-as-latest", {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      message_id: messageId,
+    }),
+  });
+  return response;
+}
+
 export async function handleChatFeedback(
   messageId: number,
   feedback: FeedbackType,
-  feedbackDetails: string
+  feedbackDetails: string,
+  predefinedFeedback: string | undefined
 ) {
   const response = await fetch("/api/chat/create-chat-message-feedback", {
     method: "POST",
@@ -129,11 +182,11 @@ export async function handleChatFeedback(
       chat_message_id: messageId,
       is_positive: feedback === "like",
       feedback_text: feedbackDetails,
+      predefined_feedback: predefinedFeedback,
     }),
   });
   return response;
 }
-
 export async function renameChatSession(
   chatSessionId: number,
   newName: string
@@ -292,65 +345,201 @@ export function getLastSuccessfulMessageId(messageHistory: Message[]) {
   return lastSuccessfulMessage ? lastSuccessfulMessage?.messageId : null;
 }
 
-export function processRawChatHistory(rawMessages: BackendMessage[]) {
-  const messageMap: Map<number, BackendMessage> = new Map(
-    rawMessages.map((message) => [message.message_id, message])
+export function processRawChatHistory(
+  rawMessages: BackendMessage[]
+): Map<number, Message> {
+  const messages: Map<number, Message> = new Map();
+  const parentMessageChildrenMap: Map<number, number[]> = new Map();
+
+  rawMessages.forEach((messageInfo) => {
+    const hasContextDocs =
+      (messageInfo?.context_docs?.top_documents || []).length > 0;
+    let retrievalType;
+    if (hasContextDocs) {
+      if (messageInfo.rephrased_query) {
+        retrievalType = RetrievalType.Search;
+      } else {
+        retrievalType = RetrievalType.SelectedDocs;
+      }
+    } else {
+      retrievalType = RetrievalType.None;
+    }
+
+    const message: Message = {
+      messageId: messageInfo.message_id,
+      message: messageInfo.message,
+      type: messageInfo.message_type as "user" | "assistant",
+      files: messageInfo.files,
+      // only include these fields if this is an assistant message so that
+      // this is identical to what is computed at streaming time
+      ...(messageInfo.message_type === "assistant"
+        ? {
+            retrievalType: retrievalType,
+            query: messageInfo.rephrased_query,
+            documents: messageInfo?.context_docs?.top_documents || [],
+            citations: messageInfo?.citations || {},
+          }
+        : {}),
+      parentMessageId: messageInfo.parent_message,
+      childrenMessageIds: [],
+      latestChildMessageId: messageInfo.latest_child_message,
+    };
+
+    messages.set(messageInfo.message_id, message);
+
+    if (messageInfo.parent_message !== null) {
+      if (!parentMessageChildrenMap.has(messageInfo.parent_message)) {
+        parentMessageChildrenMap.set(messageInfo.parent_message, []);
+      }
+      parentMessageChildrenMap
+        .get(messageInfo.parent_message)!
+        .push(messageInfo.message_id);
+    }
+  });
+
+  // Populate childrenMessageIds for each message
+  parentMessageChildrenMap.forEach((childrenIds, parentId) => {
+    childrenIds.sort((a, b) => a - b);
+    const parentMesage = messages.get(parentId);
+    if (parentMesage) {
+      parentMesage.childrenMessageIds = childrenIds;
+    }
+  });
+
+  return messages;
+}
+
+export function buildLatestMessageChain(
+  messageMap: Map<number, Message>,
+  additionalMessagesOnMainline: Message[] = []
+): Message[] {
+  const rootMessage = Array.from(messageMap.values()).find(
+    (message) => message.parentMessageId === null
   );
 
-  const rootMessage = rawMessages.find(
-    (message) => message.parent_message === null
-  );
-
-  const finalMessageList: BackendMessage[] = [];
+  let finalMessageList: Message[] = [];
   if (rootMessage) {
-    let currMessage: BackendMessage | null = rootMessage;
+    let currMessage: Message | null = rootMessage;
     while (currMessage) {
       finalMessageList.push(currMessage);
-      const childMessageNumber = currMessage.latest_child_message;
+      const childMessageNumber = currMessage.latestChildMessageId;
       if (childMessageNumber && messageMap.has(childMessageNumber)) {
-        currMessage = messageMap.get(childMessageNumber) as BackendMessage;
+        currMessage = messageMap.get(childMessageNumber) as Message;
       } else {
         currMessage = null;
       }
     }
   }
 
-  const messages: Message[] = finalMessageList
-    .filter((messageInfo) => messageInfo.message_type !== "system")
-    .map((messageInfo) => {
-      const hasContextDocs =
-        (messageInfo?.context_docs?.top_documents || []).length > 0;
-      let retrievalType;
-      if (hasContextDocs) {
-        if (messageInfo.rephrased_query) {
-          retrievalType = RetrievalType.Search;
-        } else {
-          retrievalType = RetrievalType.SelectedDocs;
-        }
-      } else {
-        retrievalType = RetrievalType.None;
-      }
+  // remove system message
+  if (finalMessageList.length > 0 && finalMessageList[0].type === "system") {
+    finalMessageList = finalMessageList.slice(1);
+  }
+  return finalMessageList.concat(additionalMessagesOnMainline);
+}
 
-      return {
-        messageId: messageInfo.message_id,
-        message: messageInfo.message,
-        type: messageInfo.message_type as "user" | "assistant",
-        // only include these fields if this is an assistant message so that
-        // this is identical to what is computed at streaming time
-        ...(messageInfo.message_type === "assistant"
-          ? {
-              retrievalType: retrievalType,
-              query: messageInfo.rephrased_query,
-              documents: messageInfo?.context_docs?.top_documents || [],
-              citations: messageInfo?.citations || {},
-            }
-          : {}),
-      };
-    });
+export function updateParentChildren(
+  message: Message,
+  completeMessageMap: Map<number, Message>,
+  setAsLatestChild: boolean = false
+) {
+  // NOTE: updates the `completeMessageMap` in place
+  const parentMessage = message.parentMessageId
+    ? completeMessageMap.get(message.parentMessageId)
+    : null;
+  if (parentMessage) {
+    if (setAsLatestChild) {
+      parentMessage.latestChildMessageId = message.messageId;
+    }
 
-  return messages;
+    const parentChildMessages = parentMessage.childrenMessageIds || [];
+    if (!parentChildMessages.includes(message.messageId)) {
+      parentChildMessages.push(message.messageId);
+    }
+    parentMessage.childrenMessageIds = parentChildMessages;
+  }
+}
+
+export function removeMessage(
+  messageId: number,
+  completeMessageMap: Map<number, Message>
+) {
+  const messageToRemove = completeMessageMap.get(messageId);
+  if (!messageToRemove) {
+    return;
+  }
+
+  const parentMessage = messageToRemove.parentMessageId
+    ? completeMessageMap.get(messageToRemove.parentMessageId)
+    : null;
+  if (parentMessage) {
+    if (parentMessage.latestChildMessageId === messageId) {
+      parentMessage.latestChildMessageId = null;
+    }
+    const currChildMessage = parentMessage.childrenMessageIds || [];
+    const newChildMessage = currChildMessage.filter((id) => id !== messageId);
+    parentMessage.childrenMessageIds = newChildMessage;
+  }
+
+  completeMessageMap.delete(messageId);
 }
 
 export function personaIncludesRetrieval(selectedPersona: Persona) {
   return selectedPersona.num_chunks !== 0;
+}
+
+const PARAMS_TO_SKIP = [
+  SEARCH_PARAM_NAMES.SUBMIT_ON_LOAD,
+  SEARCH_PARAM_NAMES.USER_MESSAGE,
+  SEARCH_PARAM_NAMES.TITLE,
+  // only use these if explicitly passed in
+  SEARCH_PARAM_NAMES.CHAT_ID,
+  SEARCH_PARAM_NAMES.PERSONA_ID,
+];
+
+export function buildChatUrl(
+  existingSearchParams: ReadonlyURLSearchParams,
+  chatSessionId: number | null,
+  personaId: number | null
+) {
+  const finalSearchParams: string[] = [];
+  if (chatSessionId) {
+    finalSearchParams.push(`${SEARCH_PARAM_NAMES.CHAT_ID}=${chatSessionId}`);
+  }
+  if (personaId !== null) {
+    finalSearchParams.push(`${SEARCH_PARAM_NAMES.PERSONA_ID}=${personaId}`);
+  }
+
+  existingSearchParams.forEach((value, key) => {
+    if (!PARAMS_TO_SKIP.includes(key)) {
+      finalSearchParams.push(`${key}=${value}`);
+    }
+  });
+  const finalSearchParamsString = finalSearchParams.join("&");
+
+  if (finalSearchParamsString) {
+    return `/chat?${finalSearchParamsString}`;
+  }
+
+  return "/chat";
+}
+
+export async function uploadFilesForChat(
+  files: File[]
+): Promise<[string[], string | null]> {
+  const formData = new FormData();
+  files.forEach((file) => {
+    formData.append("files", file);
+  });
+
+  const response = await fetch("/api/chat/file", {
+    method: "POST",
+    body: formData,
+  });
+  if (!response.ok) {
+    return [[], `Failed to upload files - ${(await response.json()).detail}`];
+  }
+  const responseJson = await response.json();
+
+  return [responseJson.file_ids as string[], null];
 }
