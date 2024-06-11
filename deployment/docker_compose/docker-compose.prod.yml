@@ -8,7 +8,7 @@ services:
     command: >
       /bin/sh -c "alembic upgrade head &&
       echo \"Starting Danswer Api Server\" &&
-      uvicorn danswer.main:app --host 0.0.0.0 --port 8079"
+      uvicorn danswer.main:app --host 0.0.0.0 --port 8080"
     depends_on:
       - relational_db
       - index
@@ -75,7 +75,7 @@ services:
     env_file:
       - .env
     environment:
-      - INTERNAL_URL=http://api_server:8079
+      - INTERNAL_URL=http://api_server:8080
     logging:
       driver: json-file
       options:
@@ -90,7 +90,7 @@ services:
     env_file:
       - .env
     volumes:
-      - db_volume:/var/lib/postgresql/data
+      - ./db:/var/lib/postgresql/data
     logging:
       driver: json-file
       options:
@@ -117,7 +117,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-info}
     volumes:
       # Not necessary, this is just to reduce download time during startup
-      - model_cache_huggingface:/root/.cache/huggingface/
+      - ./model_cache_huggingface:/root/.cache/huggingface/
     logging:
       driver: json-file
       options:
@@ -145,7 +145,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-info}
     volumes:
       # Not necessary, this is just to reduce download time during startup
-      - model_cache_huggingface:/root/.cache/huggingface/
+      - ./model_cache_huggingface:/root/.cache/huggingface/
     logging:
       driver: json-file
       options:
@@ -159,9 +159,11 @@ services:
     restart: always
     ports:
       - "19071:19071"
+      - "19070:19070"
+      - "54280:54280"
       - "8081:8081"
     volumes:
-      - vespa_volume:/opt/vespa/var
+      - ./vespa:/opt/vespa/var
     logging:
       driver: json-file
       options:
@@ -200,42 +202,3 @@ services:
         while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g \"daemon off;\""
     env_file:
       - .env.nginx
-  # Run with --profile model-server to bring up the danswer-model-server container
-  model_server:
-    image: danswer/danswer-model-server:latest
-    build:
-      context: ../../backend
-      dockerfile: Dockerfile.model_server
-    profiles:
-      - "model-server"
-    command: uvicorn model_server.main:app --host 0.0.0.0 --port 9000
-    restart: always
-    environment:
-      - DOCUMENT_ENCODER_MODEL=${DOCUMENT_ENCODER_MODEL:-}
-      - NORMALIZE_EMBEDDINGS=${NORMALIZE_EMBEDDINGS:-}
-      - MIN_THREADS_ML_MODELS=${MIN_THREADS_ML_MODELS:-}
-      # Set to debug to get more fine-grained logs
-      - LOG_LEVEL=${LOG_LEVEL:-info}
-    volumes:
-      - model_cache_torch:/root/.cache/torch/
-      - model_cache_huggingface:/root/.cache/huggingface/
-
-  # follows https://pentacent.medium.com/nginx-and-lets-encrypt-with-docker-in-less-than-5-minutes-b4b8a60d3a71
-  certbot:
-    image: certbot/certbot
-    restart: always
-    volumes:
-      - ../data/certbot/conf:/etc/letsencrypt
-      - ../data/certbot/www:/var/www/certbot
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "6"
-    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
-
-volumes:
-  db_volume:
-  vespa_volume:
-  # Created by the container itself
-  model_cache_huggingface:
