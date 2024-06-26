@@ -32,6 +32,10 @@ const MODELS_SUPPORTING_IMAGES = [
   ["openai", "gpt-4-vision-preview"],
   ["openai", "gpt-4-turbo"],
   ["openai", "gpt-4-1106-vision-preview"],
+  ["azure", "gpt-4o"],
+  ["azure", "gpt-4-vision-preview"],
+  ["azure", "gpt-4-turbo"],
+  ["azure", "gpt-4-1106-vision-preview"],
 ];
 
 export function checkLLMSupportsImageInput(provider: string, model: string) {
@@ -39,3 +43,20 @@ export function checkLLMSupportsImageInput(provider: string, model: string) {
     ([p, m]) => p === provider && m === model
   );
 }
+
+export const structureValue = (
+  name: string,
+  provider: string,
+  modelName: string
+) => {
+  return `${name}__${provider}__${modelName}`;
+};
+
+export const destructureValue = (value: string): LlmOverride => {
+  const [displayName, provider, modelName] = value.split("__");
+  return {
+    name: displayName,
+    provider,
+    modelName,
+  };
+};

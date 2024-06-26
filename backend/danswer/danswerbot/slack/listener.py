@@ -56,6 +56,22 @@ from shared_configs.configs import MODEL_SERVER_PORT
 
 logger = setup_logger()
 
+# In rare cases, some users have been experiencing a massive amount of trivial messages coming through
+# to the Slack Bot with trivial messages. Adding this to avoid exploding LLM costs while we track down
+# the cause.
+_SLACK_GREETINGS_TO_IGNORE = {
+    "Welcome back!",
+    "It's going to be a great day.",
+    "Salutations!",
+    "Greetings!",
+    "Feeling great!",
+    "Hi there",
+    ":wave:",
+}
+
+# this is always (currently) the user id of Slack's official slackbot
+_OFFICIAL_SLACKBOT_USER_ID = "USLACKBOT"
+
 
 def prefilter_requests(req: SocketModeRequest, client: SocketModeClient) -> bool:
     """True to keep going, False to ignore this Slack request"""
@@ -76,6 +92,28 @@ def prefilter_requests(req: SocketModeRequest, client: SocketModeClient) -> bool
 
         if not msg:
             channel_specific_logger.error("Cannot respond to empty message - skipping")
+            return False
+
+        if (
+            req.payload.setdefault("event", {}).get("user", "")
+            == _OFFICIAL_SLACKBOT_USER_ID
+        ):
+            channel_specific_logger.info(
+                "Ignoring messages from Slack's official Slackbot"
+            )
+            return False
+
+        if (
+            msg in _SLACK_GREETINGS_TO_IGNORE
+            or remove_danswer_bot_tag(msg, client=client.web_client)
+            in _SLACK_GREETINGS_TO_IGNORE
+        ):
+            channel_specific_logger.error(
+                f"Ignoring weird Slack greeting message: '{msg}'"
+            )
+            channel_specific_logger.error(
+                f"Weird Slack greeting message payload: '{req.payload}'"
+            )
             return False
 
         # Ensure that the message is a new message of expected type

@@ -11,7 +11,6 @@ import {
   Brain,
   X,
   Question,
-  Users,
   Gear,
   ArrowSquareOut,
 } from "@phosphor-icons/react";
@@ -36,7 +35,10 @@ import {
   FiCpu,
   FiInfo,
   FiUploadCloud,
+  FiUser,
   FiUsers,
+  FiBarChart2,
+  FiDatabase,
 } from "react-icons/fi";
 import { SiBookstack } from "react-icons/si";
 import Image from "next/image";
@@ -52,11 +54,13 @@ import document360Icon from "../../../public/Document360.png";
 import googleSitesIcon from "../../../public/GoogleSites.png";
 import zendeskIcon from "../../../public/Zendesk.svg";
 import dropboxIcon from "../../../public/Dropbox.png";
+import salesforceIcon from "../../../public/Salesforce.png";
 import sharepointIcon from "../../../public/Sharepoint.png";
 import teamsIcon from "../../../public/Teams.png";
 import mediawikiIcon from "../../../public/MediaWiki.svg";
 import wikipediaIcon from "../../../public/Wikipedia.svg";
 import discourseIcon from "../../../public/Discourse.png";
+import clickupIcon from "../../../public/Clickup.svg";
 import { FaRobot } from "react-icons/fa";
 
 interface IconProps {
@@ -92,7 +96,7 @@ export const UsersIcon = ({
   size = 16,
   className = defaultTailwindCSS,
 }: IconProps) => {
-  return <Users size={size} className={className} />;
+  return <FiUser size={size} className={className} />;
 };
 
 export const GroupsIcon = ({
@@ -527,6 +531,18 @@ export const RequestTrackerIcon = ({
   </div>
 );
 
+export const SalesforceIcon = ({
+  size = 16,
+  className = defaultTailwindCSS,
+}: IconProps) => (
+  <div
+    style={{ width: `${size}px`, height: `${size}px` }}
+    className={`w-[${size}px] h-[${size}px] ` + className}
+  >
+    <Image src={salesforceIcon} alt="Logo" width="96" height="96" />
+  </div>
+);
+
 export const SharepointIcon = ({
   size = 16,
   className = defaultTailwindCSS,
@@ -654,6 +670,20 @@ export const AxeroIcon = ({
   </div>
 );
 
+export const ClickupIcon = ({
+  size = 16,
+  className = defaultTailwindCSS,
+}: IconProps) => {
+  return (
+    <div
+      style={{ width: `${size + 4}px`, height: `${size + 4}px` }}
+      className={`w-[${size + 4}px] h-[${size + 4}px] -m-0.5 ` + className}
+    >
+      <Image src={clickupIcon} alt="Logo" width="96" height="96" />
+    </div>
+  );
+};
+
 export const MediaWikiIcon = ({
   size = 16,
   className = defaultTailwindCSS,
@@ -677,3 +707,21 @@ export const WikipediaIcon = ({
     <Image src={wikipediaIcon} alt="Logo" width="96" height="96" />
   </div>
 );
+
+/* 
+EE Icons
+*/
+
+export const BarChartIcon = ({
+  size = 16,
+  className = defaultTailwindCSS,
+}: IconProps) => {
+  return <FiBarChart2 size={size} className={className} />;
+};
+
+export const DatabaseIcon = ({
+  size = 16,
+  className = defaultTailwindCSS,
+}: IconProps) => {
+  return <FiDatabase size={size} className={className} />;
+};

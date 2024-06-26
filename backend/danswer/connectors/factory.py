@@ -1,9 +1,12 @@
 from typing import Any
 from typing import Type
 
+from sqlalchemy.orm import Session
+
 from danswer.configs.constants import DocumentSource
 from danswer.connectors.axero.connector import AxeroConnector
 from danswer.connectors.bookstack.connector import BookstackConnector
+from danswer.connectors.clickup.connector import ClickupConnector
 from danswer.connectors.confluence.connector import ConfluenceConnector
 from danswer.connectors.danswer_jira.connector import JiraConnector
 from danswer.connectors.discourse.connector import DiscourseConnector
@@ -29,6 +32,7 @@ from danswer.connectors.models import InputType
 from danswer.connectors.notion.connector import NotionConnector
 from danswer.connectors.productboard.connector import ProductboardConnector
 from danswer.connectors.requesttracker.connector import RequestTrackerConnector
+from danswer.connectors.salesforce.connector import SalesforceConnector
 from danswer.connectors.sharepoint.connector import SharepointConnector
 from danswer.connectors.slab.connector import SlabConnector
 from danswer.connectors.slack.connector import SlackPollConnector
@@ -38,6 +42,8 @@ from danswer.connectors.web.connector import WebConnector
 from danswer.connectors.wikipedia.connector import WikipediaConnector
 from danswer.connectors.zendesk.connector import ZendeskConnector
 from danswer.connectors.zulip.connector import ZulipConnector
+from danswer.db.credentials import backend_update_credential_json
+from danswer.db.models import Credential
 
 
 class ConnectorMissingException(Exception):
@@ -78,8 +84,10 @@ def identify_connector_class(
         DocumentSource.DROPBOX: DropboxConnector,
         DocumentSource.SHAREPOINT: SharepointConnector,
         DocumentSource.TEAMS: TeamsConnector,
+        DocumentSource.SALESFORCE: SalesforceConnector,
         DocumentSource.DISCOURSE: DiscourseConnector,
         DocumentSource.AXERO: AxeroConnector,
+        DocumentSource.CLICKUP: ClickupConnector,
         DocumentSource.MEDIAWIKI: MediaWikiConnector,
         DocumentSource.WIKIPEDIA: WikipediaConnector,
     }
@@ -115,10 +123,14 @@ def instantiate_connector(
     source: DocumentSource,
     input_type: InputType,
     connector_specific_config: dict[str, Any],
-    credentials: dict[str, Any],
-) -> tuple[BaseConnector, dict[str, Any] | None]:
+    credential: Credential,
+    db_session: Session,
+) -> BaseConnector:
     connector_class = identify_connector_class(source, input_type)
     connector = connector_class(**connector_specific_config)
-    new_credentials = connector.load_credentials(credentials)
+    new_credentials = connector.load_credentials(credential.credential_json)
 
-    return connector, new_credentials
+    if new_credentials is not None:
+        backend_update_credential_json(credential, new_credentials, db_session)
+
+    return connector
