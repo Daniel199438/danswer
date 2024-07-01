@@ -8,23 +8,21 @@ services:
     command: >
       /bin/sh -c "alembic upgrade head &&
       echo \"Starting Danswer Api Server\" &&
-      uvicorn danswer.main:app --host 0.0.0.0 --port 8079"
+      uvicorn danswer.main:app --host 0.0.0.0 --port 8083"
     depends_on:
       - relational_db
       - index
+      - inference_model_server
     restart: always
+    ports:
+      - "8083:8083"
     env_file:
       - .env
     environment:
-      - AUTH_TYPE=${AUTH_TYPE:-google_oauth}
+      - AUTH_TYPE=${AUTH_TYPE:-oidc}
       - POSTGRES_HOST=relational_db
       - VESPA_HOST=index
-    volumes:
-      - local_dynamic_storage:/home/storage
-      - file_connector_tmp_storage:/home/file_connector_storage
-      - model_cache_torch:/root/.cache/torch/
-      - model_cache_nltk:/root/nltk_data/
-      - model_cache_huggingface:/root/.cache/huggingface/
+      - MODEL_SERVER_HOST=${MODEL_SERVER_HOST:-inference_model_server}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     logging:
@@ -32,28 +30,28 @@ services:
       options:
         max-size: "50m"
         max-file: "6"
+
+
   background:
     image: danswer/danswer-backend:latest
     build:
       context: ../../backend
       dockerfile: Dockerfile
-    command: /usr/bin/supervisord
+    command: /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
     depends_on:
       - relational_db
       - index
+      - inference_model_server
+      - indexing_model_server
     restart: always
     env_file:
       - .env
     environment:
-      - AUTH_TYPE=${AUTH_TYPE:-google_oauth}
+      - AUTH_TYPE=${AUTH_TYPE:-oidc}
       - POSTGRES_HOST=relational_db
       - VESPA_HOST=index
-    volumes:
-      - local_dynamic_storage:/home/storage
-      - file_connector_tmp_storage:/home/file_connector_storage
-      - model_cache_torch:/root/.cache/torch/
-      - model_cache_nltk:/root/nltk_data/
-      - model_cache_huggingface:/root/.cache/huggingface/
+      - MODEL_SERVER_HOST=${MODEL_SERVER_HOST:-inference_model_server}
+      - INDEXING_MODEL_SERVER_HOST=${INDEXING_MODEL_SERVER_HOST:-indexing_model_server}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     logging:
@@ -61,6 +59,7 @@ services:
       options:
         max-size: "50m"
         max-file: "6"
+
   web_server:
     image: danswer/danswer-web-server:latest
     build:
@@ -69,18 +68,24 @@ services:
       args:
         - NEXT_PUBLIC_DISABLE_STREAMING=${NEXT_PUBLIC_DISABLE_STREAMING:-false}
         - NEXT_PUBLIC_NEW_CHAT_DIRECTS_TO_SAME_PERSONA=${NEXT_PUBLIC_NEW_CHAT_DIRECTS_TO_SAME_PERSONA:-false}
+        - NEXT_PUBLIC_POSITIVE_PREDEFINED_FEEDBACK_OPTIONS=${NEXT_PUBLIC_POSITIVE_PREDEFINED_FEEDBACK_OPTIONS:-}
+        - NEXT_PUBLIC_NEGATIVE_PREDEFINED_FEEDBACK_OPTIONS=${NEXT_PUBLIC_NEGATIVE_PREDEFINED_FEEDBACK_OPTIONS:-}
+        - NEXT_PUBLIC_DISABLE_LOGOUT=${NEXT_PUBLIC_DISABLE_LOGOUT:-}
+        - NEXT_PUBLIC_THEME=${NEXT_PUBLIC_THEME:-}
     depends_on:
       - api_server
     restart: always
     env_file:
       - .env
     environment:
-      - INTERNAL_URL=http://api_server:8079
+      - INTERNAL_URL=http://api_server:8083
     logging:
       driver: json-file
       options:
         max-size: "50m"
         max-file: "6"
+
+
   relational_db:
     image: postgres:15.2-alpine
     restart: always
@@ -88,26 +93,87 @@ services:
     env_file:
       - .env
     volumes:
-      - db_volume:/var/lib/postgresql/data
+      - ./db:/var/lib/postgresql/data
     logging:
       driver: json-file
       options:
         max-size: "50m"
         max-file: "6"
+
+
+  inference_model_server:
+    image: danswer/danswer-model-server:latest
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile.model_server
+    command: >
+      /bin/sh -c "if [ \"${DISABLE_MODEL_SERVER:-false}\" = \"True\" ]; then
+        echo 'Skipping service...';
+        exit 0;
+      else
+        exec uvicorn model_server.main:app --host 0.0.0.0 --port 9000;
+      fi"
+    restart: on-failure
+    environment:
+      - MIN_THREADS_ML_MODELS=${MIN_THREADS_ML_MODELS:-}
+      # Set to debug to get more fine-grained logs
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    volumes:
+      # Not necessary, this is just to reduce download time during startup
+      - ./model_cache_huggingface:/root/.cache/huggingface/
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "6"
+
+
+  indexing_model_server:
+    image: danswer/danswer-model-server:latest
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile.model_server
+    command: >
+      /bin/sh -c "if [ \"${DISABLE_MODEL_SERVER:-false}\" = \"True\" ]; then
+        echo 'Skipping service...';
+        exit 0;
+      else
+        exec uvicorn model_server.main:app --host 0.0.0.0 --port 9000;
+      fi"
+    restart: on-failure
+    environment:
+      - MIN_THREADS_ML_MODELS=${MIN_THREADS_ML_MODELS:-}
+      - INDEXING_ONLY=True
+      # Set to debug to get more fine-grained logs
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    volumes:
+      # Not necessary, this is just to reduce download time during startup
+      - ./model_cache_huggingface:/root/.cache/huggingface/
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "6"
+
+
   # This container name cannot have an underscore in it due to Vespa expectations of the URL
   index:
     image: vespaengine/vespa:8.277.17
     restart: always
     ports:
       - "19071:19071"
+      - "19070:19070"
+      - "54280:54280"
       - "8081:8081"
     volumes:
-      - vespa_volume:/opt/vespa/var
+      - ./vespa:/opt/vespa/var
     logging:
       driver: json-file
       options:
         max-size: "50m"
         max-file: "6"
+
+
   nginx:
     image: nginx:1.23.4-alpine
     restart: always
@@ -139,35 +205,3 @@ services:
         while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g \"daemon off;\""
     env_file:
       - .env.nginx
-  # Run with --profile model-server to bring up the danswer-model-server container
-  model_server:
-    image: danswer/danswer-model-server:latest
-    build:
-      context: ../../backend
-      dockerfile: Dockerfile.model_server
-    profiles:
-      - "model-server"
-    command: uvicorn model_server.main:app --host 0.0.0.0 --port 9000
-    restart: always
-    environment:
-      - DOCUMENT_ENCODER_MODEL=${DOCUMENT_ENCODER_MODEL:-}
-      - NORMALIZE_EMBEDDINGS=${NORMALIZE_EMBEDDINGS:-}
-      - MIN_THREADS_ML_MODELS=${MIN_THREADS_ML_MODELS:-}
-      # Set to debug to get more fine-grained logs
-      - LOG_LEVEL=${LOG_LEVEL:-info}
-    volumes:
-      - model_cache_torch:/root/.cache/torch/
-      - model_cache_huggingface:/root/.cache/huggingface/
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "6"
-volumes:
-  local_dynamic_storage:
-  file_connector_tmp_storage:  # used to store files uploaded by the user temporarily while we are indexing them
-  db_volume:
-  vespa_volume:
-  model_cache_torch:
-  model_cache_nltk:
-  model_cache_huggingface:
