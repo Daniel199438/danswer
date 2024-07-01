@@ -24,6 +24,9 @@ RUN pip install --no-cache-dir --upgrade -r /tmp/requirements.txt && \
     playwright install chromium && playwright install-deps chromium && \
     ln -s /usr/local/bin/supervisord /usr/bin/supervisord
 
+# Install additional machine learning libraries
+RUN pip install torch tensorflow flax
+
 # Cleanup for CVEs and size reduction
 # https://github.com/tornadoweb/tornado/issues/3107
 # xserver-common and xvfb included by playwright installation but not needed after
